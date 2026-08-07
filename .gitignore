@@ -1,0 +1,49 @@
+# Build directories
+build/
+**/build/
+
+# Generated files
+generated/
+**/generated/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+!pico_sdk_import.cmake
+!CMakeLists.txt
+!CMakeLists_simple.txt
+
+# Compiled files
+*.o
+*.elf
+*.bin
+*.uf2
+*.hex
+*.dis
+*.map
+*.a
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+
+
+
+
+
+
+
+
+
+

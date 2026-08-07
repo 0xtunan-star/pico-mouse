@@ -4,38 +4,64 @@ on:
   push:
   workflow_dispatch:
 
+
 jobs:
   build:
+
     runs-on: ubuntu-latest
+
 
     steps:
 
-    - uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake ninja-build
+        sudo apt update
+        sudo apt install -y \
+          cmake \
+          ninja-build \
+          gcc-arm-none-eabi \
+          build-essential
+
+
+    - name: Check tools
+      run: |
+        arm-none-eabi-gcc --version
+        ninja --version
 
 
     - name: Clone Pico SDK
       run: |
-        git clone https://github.com/raspberrypi/pico-sdk.git $HOME/pico-sdk
+        git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git $HOME/pico-sdk
+
         cd $HOME/pico-sdk
+
         git submodule update --init lib/tinyusb
 
 
     - name: Build
       run: |
+
         mkdir build
+
         cd build
-        cmake .. -G Ninja -DPICO_SDK_PATH=$HOME/pico-sdk
+
+        cmake .. \
+          -G Ninja \
+          -DPICO_SDK_PATH=$HOME/pico-sdk
+
         ninja
+
 
 
     - name: Upload UF2
       uses: actions/upload-artifact@v4
+
       with:
+
         name: usb_mouse
-        path: build/usb_mouse.uf2
+
+        path: build/*.uf2

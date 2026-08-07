@@ -1,46 +1,40 @@
 #include "pico/stdlib.h"
 #include "tusb.h"
 
-#define REPORT_ID_MOUSE    1
-#define REPORT_ID_KEYBOARD 2
+
+#define REPORT_ID_MOUSE     1
+#define REPORT_ID_KEYBOARD  2
 
 
-const uint8_t desc_hid_report[] =
+// =========================
+// HID Report Descriptor
+// =========================
+
+uint8_t const desc_hid_report[] =
 {
-    TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(REPORT_ID_MOUSE)),
-    TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(REPORT_ID_KEYBOARD))
-};
-
-
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
-
-uint8_t const desc_configuration[] =
-{
-    TUD_CONFIG_DESCRIPTOR(
-        1,
-        1,
-        0,
-        CONFIG_TOTAL_LEN,
-        TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP,
-        100
+    // Mouse
+    TUD_HID_REPORT_DESC_MOUSE(
+        HID_REPORT_ID(REPORT_ID_MOUSE)
     ),
 
-    TUD_HID_DESCRIPTOR(
-        0,
-        0,
-        HID_ITF_PROTOCOL_NONE,
-        sizeof(desc_hid_report),
-        0x81,
-        64,
-        10
+
+    // Keyboard
+    TUD_HID_REPORT_DESC_KEYBOARD(
+        HID_REPORT_ID(REPORT_ID_KEYBOARD)
     )
 };
 
+
+
+// =========================
+// Device Descriptor
+// =========================
 
 tusb_desc_device_t const desc_device =
 {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
+
     .bcdUSB             = 0x0200,
 
     .bDeviceClass       = 0x00,
@@ -49,23 +43,98 @@ tusb_desc_device_t const desc_device =
 
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
 
+
     .idVendor           = 0x046D,
     .idProduct          = 0xC539,
 
     .bcdDevice          = 0x0100,
 
+
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
 
+
     .bNumConfigurations = 0x01
 };
+
+
+
+// =========================
+// Configuration Descriptor
+// =========================
+
+
+enum
+{
+    ITF_NUM_MOUSE,
+    ITF_NUM_KEYBOARD,
+
+    ITF_NUM_TOTAL
+};
+
+
+#define CONFIG_TOTAL_LEN \
+    (TUD_CONFIG_DESC_LEN + \
+     TUD_HID_DESC_LEN + \
+     TUD_HID_DESC_LEN)
+
+
+
+uint8_t const desc_configuration[] =
+{
+
+    TUD_CONFIG_DESCRIPTOR(
+        1,
+        ITF_NUM_TOTAL,
+        0,
+        CONFIG_TOTAL_LEN,
+        TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP,
+        100
+    ),
+
+
+
+    // HID Mouse Interface 0
+
+    TUD_HID_DESCRIPTOR(
+        ITF_NUM_MOUSE,
+        0,
+        HID_ITF_PROTOCOL_MOUSE,
+        sizeof(desc_hid_report),
+        0x81,
+        16,
+        10
+    ),
+
+
+
+    // HID Keyboard Interface 1
+
+    TUD_HID_DESCRIPTOR(
+        ITF_NUM_KEYBOARD,
+        0,
+        HID_ITF_PROTOCOL_KEYBOARD,
+        sizeof(desc_hid_report),
+        0x82,
+        16,
+        10
+    )
+};
+
+
+
+
+// =========================
+// Descriptor callbacks
+// =========================
 
 
 const uint8_t* tud_descriptor_device_cb(void)
 {
     return (const uint8_t*)&desc_device;
 }
+
 
 
 const uint8_t* tud_descriptor_configuration_cb(uint8_t index)
@@ -76,62 +145,84 @@ const uint8_t* tud_descriptor_configuration_cb(uint8_t index)
 }
 
 
-const uint16_t* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
+
+
+const uint16_t* tud_descriptor_string_cb(
+    uint8_t index,
+    uint16_t langid
+)
 {
     static uint16_t str[32];
 
-    if (index == 0)
+
+    if(index == 0)
     {
-        str[0] = 0x0304;
+        str[0] = (TUSB_DESC_STRING << 8) | 4;
         str[1] = 0x0409;
 
         return str;
     }
 
 
-    const char* s = NULL;
+    const char* text = NULL;
 
 
-    if (index == 1)
+    switch(index)
     {
-        s = "Logitech";
-    }
-    else if (index == 2)
-    {
-        s = "Pico Combo";
-    }
-    else if (index == 3)
-    {
-        s = "123456";
-    }
-    else
-    {
-        return NULL;
-    }
+        case 1:
+            text = "Logitech";
+            break;
 
 
-    size_t len = strlen(s);
+        case 2:
+            text = "Pico Mouse Keyboard";
+            break;
 
 
-    for (size_t i = 0; i < len; i++)
-    {
-        str[1 + i] = s[i];
+        case 3:
+            text = "000001";
+            break;
+
+
+        default:
+            return NULL;
     }
 
 
-    str[0] = (TUSB_DESC_STRING << 8) | (2 * len + 2);
+
+    uint8_t len = strlen(text);
+
+
+    for(uint8_t i = 0; i < len; i++)
+    {
+        str[1+i] = text[i];
+    }
+
+
+    str[0] =
+        (TUSB_DESC_STRING << 8)
+        |
+        (2*len + 2);
+
 
 
     return str;
 }
 
 
-const uint8_t* tud_hid_descriptor_report_cb(uint8_t instance)
+
+
+const uint8_t* tud_hid_descriptor_report_cb(
+    uint8_t instance
+)
 {
     (void)instance;
 
     return desc_hid_report;
 }
+
+
+
 
 
 void tud_hid_set_report_cb(
@@ -142,7 +233,9 @@ void tud_hid_set_report_cb(
     uint16_t bufsize
 )
 {
+
 }
+
 
 
 uint16_t tud_hid_get_report_cb(
@@ -158,33 +251,49 @@ uint16_t tud_hid_get_report_cb(
 
 
 
-static void send_mouse(int8_t dx, int8_t dy)
+
+
+// =========================
+// Send Mouse
+// =========================
+
+void send_mouse(int8_t x, int8_t y)
 {
+
     uint8_t report[5] =
     {
         0,
-        dx,
-        dy,
+        x,
+        y,
         0,
         0
     };
 
 
     tud_hid_report(
+        ITF_NUM_MOUSE,
         REPORT_ID_MOUSE,
         report,
-        5
+        sizeof(report)
     );
+
 }
 
 
 
-static void send_keyboard(uint8_t modifier, uint8_t key)
+
+
+// =========================
+// Send Keyboard
+// =========================
+
+void send_keyboard(uint8_t key)
 {
+
     uint8_t report[8] =
     {
-        modifier,
-        0x00,
+        0,
+        0,
         key,
         0,
         0,
@@ -195,83 +304,110 @@ static void send_keyboard(uint8_t modifier, uint8_t key)
 
 
     tud_hid_report(
+        ITF_NUM_KEYBOARD,
         REPORT_ID_KEYBOARD,
         report,
-        8
+        sizeof(report)
     );
+
 }
 
 
 
+
+
+// =========================
+// Main
+// =========================
+
+
 int main()
 {
+
     board_init();
 
     tusb_init();
 
 
+
     gpio_init(25);
-    gpio_set_dir(25, GPIO_OUT);
+
+    gpio_set_dir(
+        25,
+        GPIO_OUT
+    );
+
 
 
     int step = 0;
 
-    uint32_t last_key_time = 0;
+
+    uint32_t last_key = 0;
 
 
 
-    while (1)
+    while(1)
     {
+
         tud_task();
 
 
+
         uint32_t now =
-            to_ms_since_boot(get_absolute_time());
+            to_ms_since_boot(
+                get_absolute_time()
+            );
 
 
 
-        static uint32_t last_led = 0;
+        static uint32_t led = 0;
 
 
-        if (now - last_led > 500)
+
+        if(now - led > 500)
         {
             gpio_put(
                 25,
                 !gpio_get(25)
             );
 
-            last_led = now;
+            led = now;
         }
 
 
 
-        if (tud_hid_ready())
+
+        if(tud_hid_ready())
         {
 
-            // 鼠标画圈
+
+            // 鼠标移动
+
             int8_t dx =
                 3 * (step % 20 - 10) / 10;
+
 
             int8_t dy =
                 3 * (step % 15 - 7) / 10;
 
 
-            send_mouse(dx, dy);
+
+            send_mouse(
+                dx,
+                dy
+            );
 
 
             step++;
 
 
-            sleep_ms(20);
 
+            // 每5秒空格
 
-
-            // 键盘每5秒发送空格
-
-            if (now - last_key_time > 5000)
+            if(now - last_key > 5000)
             {
+
                 send_keyboard(
-                    0,
                     HID_KEY_SPACE
                 );
 
@@ -279,14 +415,25 @@ int main()
                 sleep_ms(50);
 
 
+
                 send_keyboard(
-                    0,
                     0
                 );
 
 
-                last_key_time = now;
+
+                last_key = now;
+
             }
+
+
+
         }
+
+
+
+        sleep_ms(20);
+
     }
+
 }

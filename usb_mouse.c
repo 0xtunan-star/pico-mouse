@@ -1,7 +1,5 @@
 #include "pico/stdlib.h"
-
 #include "tusb.h"
-
 #include "bsp/board.h"
 
 #include <string.h>
@@ -12,22 +10,28 @@
 
 
 
-// HID Report Descriptor
+// ================= HID REPORT =================
+
 
 uint8_t const desc_hid_report[] =
 {
+
     TUD_HID_REPORT_DESC_MOUSE(
         HID_REPORT_ID(REPORT_ID_MOUSE)
     ),
 
+
     TUD_HID_REPORT_DESC_KEYBOARD(
         HID_REPORT_ID(REPORT_ID_KEYBOARD)
     )
+
 };
 
 
 
-// Configuration Descriptor
+
+// ================= USB CONFIG =================
+
 
 #define CONFIG_TOTAL_LEN \
     (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
@@ -36,6 +40,7 @@ uint8_t const desc_hid_report[] =
 
 uint8_t const desc_configuration[] =
 {
+
     TUD_CONFIG_DESCRIPTOR(
         1,
         1,
@@ -44,6 +49,7 @@ uint8_t const desc_configuration[] =
         TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP,
         100
     ),
+
 
 
     TUD_HID_DESCRIPTOR(
@@ -55,19 +61,24 @@ uint8_t const desc_configuration[] =
         64,
         10
     )
+
 };
 
 
 
-// Device Descriptor
+
+// ================= DEVICE =================
 
 
 tusb_desc_device_t const desc_device =
 {
+
     .bLength            = sizeof(tusb_desc_device_t),
+
     .bDescriptorType    = TUSB_DESC_DEVICE,
 
     .bcdUSB             = 0x0200,
+
 
     .bDeviceClass       = 0x00,
     .bDeviceSubClass    = 0x00,
@@ -77,26 +88,30 @@ tusb_desc_device_t const desc_device =
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
 
 
-    // Logitech 风格 VID/PID
     .idVendor           = 0x046D,
+
     .idProduct          = 0xC539,
 
 
     .bcdDevice          = 0x0100,
 
 
-    .iManufacturer      = 0x01,
-    .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .iManufacturer      = 1,
+
+    .iProduct           = 2,
+
+    .iSerialNumber      = 3,
 
 
-    .bNumConfigurations = 0x01
+    .bNumConfigurations = 1
+
 };
 
 
 
 
-// USB callbacks
+
+// ================= DESCRIPTOR CALLBACK =================
 
 
 uint8_t const * tud_descriptor_device_cb(void)
@@ -117,6 +132,7 @@ uint8_t const * tud_descriptor_configuration_cb(
 
 
 
+
 uint16_t const * tud_descriptor_string_cb(
         uint8_t index,
         uint16_t langid)
@@ -128,14 +144,15 @@ uint16_t const * tud_descriptor_string_cb(
     static uint16_t buffer[32];
 
 
-    if(index == 0)
+    if(index==0)
     {
-        buffer[0] = 
-            (TUSB_DESC_STRING << 8) | 4;
 
-        buffer[1] = 0x0409;
+        buffer[0]=(TUSB_DESC_STRING<<8)|4;
+
+        buffer[1]=0x0409;
 
         return buffer;
+
     }
 
 
@@ -148,44 +165,46 @@ uint16_t const * tud_descriptor_string_cb(
     {
 
         case 1:
-            str = "Logitech";
+            str="Logitech";
             break;
 
 
         case 2:
-            str = "USB Optical Mouse";
+            str="USB Optical Mouse";
             break;
 
 
         case 3:
-            str = "123456";
+            str="123456";
             break;
 
 
         default:
             return NULL;
+
     }
 
 
 
-    size_t len = strlen(str);
+    size_t len=strlen(str);
+
 
 
     for(size_t i=0;i<len;i++)
     {
-        buffer[1+i] = str[i];
+        buffer[1+i]=str[i];
     }
 
 
 
-    buffer[0] =
-        (TUSB_DESC_STRING << 8)
-        |
-        (2*len+2);
+    buffer[0]=(TUSB_DESC_STRING<<8)
+            |
+            (2*len+2);
 
 
 
     return buffer;
+
 }
 
 
@@ -242,6 +261,7 @@ uint16_t tud_hid_get_report_cb(
 
 
     return 0;
+
 }
 
 
@@ -249,9 +269,7 @@ uint16_t tud_hid_get_report_cb(
 
 
 
-
-
-// Send mouse report
+// ================= SEND MOUSE =================
 
 
 static void send_mouse(
@@ -263,9 +281,13 @@ static void send_mouse(
 
 
     report[0]=0;
+
     report[1]=dx;
+
     report[2]=dy;
+
     report[3]=0;
+
     report[4]=0;
 
 
@@ -283,9 +305,7 @@ static void send_mouse(
 
 
 
-
-
-// Send keyboard report
+// ================= SEND KEYBOARD =================
 
 
 static void send_keyboard(
@@ -294,15 +314,19 @@ static void send_keyboard(
 {
 
 
-    uint8_t report[8];
-
-
-    memset(report,0,sizeof(report));
+    uint8_t report[8]={0};
 
 
     report[0]=modifier;
 
     report[2]=key;
+
+
+
+    while(!tud_hid_ready())
+    {
+        tud_task();
+    }
 
 
 
@@ -312,6 +336,7 @@ static void send_keyboard(
         sizeof(report)
     );
 
+
 }
 
 
@@ -319,6 +344,8 @@ static void send_keyboard(
 
 
 
+
+// ================= MAIN =================
 
 
 int main()
@@ -340,16 +367,19 @@ int main()
 
 
 
-
     uint32_t last_key_time=0;
+
+    uint32_t last_mouse_time=0;
 
 
     int step=0;
 
 
 
+
     while(1)
     {
+
 
         tud_task();
 
@@ -362,8 +392,10 @@ int main()
 
 
 
-        static uint32_t last_led=0;
 
+        // LED heartbeat
+
+        static uint32_t last_led=0;
 
 
         if(now-last_led>500)
@@ -383,43 +415,59 @@ int main()
 
 
 
+
         if(tud_hid_ready())
         {
 
 
-            // 微小鼠标移动
 
-            int8_t dx =
-                (step%20)-10;
+            // 每100ms移动一次
 
-
-            int8_t dy =
-                (step%15)-7;
+            if(now-last_mouse_time>100)
+            {
 
 
+                int8_t dx;
 
-            dx/=10;
-            dy/=10;
+                int8_t dy;
 
 
 
-            send_mouse(
-                dx,
-                dy
-            );
-
-
-            step++;
+                if(step%2)
+                    dx=2;
+                else
+                    dx=-2;
 
 
 
-            sleep_ms(20);
+                if(step%3)
+                    dy=1;
+                else
+                    dy=-1;
+
+
+
+                send_mouse(
+                    dx,
+                    dy
+                );
+
+
+
+                step++;
+
+
+                last_mouse_time=now;
+
+            }
 
 
 
 
 
-            // 每5秒发送一次空格
+
+            // 每5秒发送空格
+
 
             if(now-last_key_time>5000)
             {
@@ -429,6 +477,7 @@ int main()
                     0,
                     HID_KEY_SPACE
                 );
+
 
 
                 sleep_ms(50);
@@ -441,12 +490,14 @@ int main()
                 );
 
 
+
                 last_key_time=now;
 
             }
 
 
         }
+
 
     }
 

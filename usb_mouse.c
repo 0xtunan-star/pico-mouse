@@ -6,13 +6,13 @@
 #include "hardware/clocks.h"
 #include "tusb.h"
 #include "bsp/board.h"
-#include "ws2812.pio.h"   // 需要ws2812.pio.h，由CMake生成
+#include "ws2812.pio.h"
 
 // ========================================================================
 // 引脚定义
 // ========================================================================
 #define WS2812_PIN  16
-#define LED_PIN     25   // 板载LED（辅助心跳）
+#define LED_PIN     25   // 板载LED（辅助心跳，可省）
 
 // ========================================================================
 // 报告 ID
@@ -21,12 +21,12 @@
 #define REPORT_ID_KEYBOARD 2
 
 // ========================================================================
-// WS2812 颜色定义 (RGB)
+// WS2812 颜色定义
 // ========================================================================
 #define COLOR_RED    0xff0000
 #define COLOR_GREEN  0x00ff00
 #define COLOR_BLUE   0x0000ff
-#define COLOR_AMBER  0xff8000  // 橙黄
+#define COLOR_AMBER  0xff8000
 #define COLOR_PURPLE 0xff00ff
 #define COLOR_OFF    0x000000
 
@@ -139,16 +139,21 @@ static bool ws2812_init(void) {
 typedef enum {
     STATE_BOOT,
     STATE_USB_READY,
+    STATE_DISABLED,
     STATE_WORK,
     STATE_REST,
     STATE_ACTIVITY,
     STATE_ERROR
 } led_state_t;
 
+static led_state_t current_led_state = STATE_BOOT;
+
 static void set_led_state(led_state_t state) {
+    current_led_state = state;
     switch (state) {
         case STATE_BOOT:     set_led(COLOR_AMBER); break;
         case STATE_USB_READY:set_led(COLOR_BLUE);  break;
+        case STATE_DISABLED: set_led(dim_color(COLOR_RED, 1)); break;   // 暗红
         case STATE_WORK:     set_led(dim_color(COLOR_GREEN, 1)); break;
         case STATE_REST:     set_led(dim_color(COLOR_AMBER, 2)); break;
         case STATE_ACTIVITY: set_led(COLOR_PURPLE); break;
@@ -157,28 +162,39 @@ static void set_led_state(led_state_t state) {
 }
 
 // ========================================================================
-// 发送函数（带等待就绪）
+// 全局状态
+// ========================================================================
+static bool usb_mounted = false;
+static bool enabled = false;          // 用户开关（默认禁用）
+static bool in_work = true;
+static uint32_t macro_until = 0;
+
+// ========================================================================
+// 发送函数
 // ========================================================================
 static void send_mouse(uint8_t buttons, int8_t dx, int8_t dy) {
+    if (!enabled) return;
     uint8_t report[5] = {buttons, dx, dy, 0, 0};
     while (!tud_hid_ready()) tud_task();
     tud_hid_report(REPORT_ID_MOUSE, report, 5);
 }
 
 static void send_keyboard(uint8_t modifier, uint8_t key) {
+    if (!enabled) return;
     uint8_t report[8] = {modifier, 0x00, key, 0, 0, 0, 0, 0};
     while (!tud_hid_ready()) tud_task();
     tud_hid_report(REPORT_ID_KEYBOARD, report, 8);
 }
 
 static void send_keyboard_release(void) {
+    if (!enabled) return;
     uint8_t report[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     while (!tud_hid_ready()) tud_task();
     tud_hid_report(REPORT_ID_KEYBOARD, report, 8);
 }
 
 // ========================================================================
-// 左键点击（可靠的按下+释放）
+// 左键点击
 // ========================================================================
 static void do_left_click(void) {
     send_mouse(0x01, 0, 0);
@@ -213,6 +229,7 @@ static uint32_t mouse_next_tick = 0;
 static bool mouse_overshoot_done = false;
 
 static void mouse_task(void) {
+    if (!enabled) return;
     if (!tud_hid_ready()) return;
 
     uint32_t now = to_ms_since_boot(get_absolute_time());
@@ -232,7 +249,7 @@ static void mouse_task(void) {
                 mouse_step = 0;
                 mouse_overshoot_done = false;
                 mouse_state = MOUSE_MOVING;
-                set_led_state(STATE_ACTIVITY);
+                if (usb_mounted) set_led_state(STATE_ACTIVITY);
             }
             break;
 
@@ -292,14 +309,20 @@ static void mouse_task(void) {
             mouse_state = MOUSE_PAUSE;
             mouse_state_until = now + rand_range(800, 4000);
             mouse_next_tick = now + 10;
-            set_led_state(STATE_WORK);  // 恢复工作色
+            if (usb_mounted) {
+                if (in_work) set_led_state(STATE_WORK);
+                else set_led_state(STATE_REST);
+            }
             break;
 
         case MOUSE_PAUSE:
             if (now > mouse_state_until) {
                 mouse_state = MOUSE_IDLE;
                 mouse_state_until = now + rand_range(3000, 8000);
-                set_led_state(STATE_WORK);
+                if (usb_mounted) {
+                    if (in_work) set_led_state(STATE_WORK);
+                    else set_led_state(STATE_REST);
+                }
             }
             mouse_next_tick = now + rand_range(10, 30);
             break;
@@ -307,7 +330,7 @@ static void mouse_task(void) {
 }
 
 // ========================================================================
-// 键盘状态机
+// 键盘状态机（同上，略）
 // ========================================================================
 typedef enum {
     KB_IDLE,
@@ -348,7 +371,7 @@ static void kb_add_step(uint8_t mod, uint8_t key, uint16_t delay) {
 
 static void kb_build_action(uint8_t type) {
     kb_reset();
-    kb_add_step(0, 0, rand_range(150, 400));  // 手从鼠标移开
+    kb_add_step(0, 0, rand_range(150, 400));
 
     switch (type) {
         case 0: {  // Cmd+S
@@ -369,7 +392,7 @@ static void kb_build_action(uint8_t type) {
             kb_add_step(0, 0, 50);
             break;
         }
-        case 3: {  // 打字纠错 "teh" -> "the "
+        case 3: {  // 打字纠错
             kb_add_step(0, HID_KEY_T, rand_range(60,120));
             kb_add_step(0, 0, rand_range(50,100));
             kb_add_step(0, HID_KEY_E, rand_range(60,120));
@@ -467,6 +490,7 @@ static void kb_machine(void) {
 }
 
 static void keyboard_task(void) {
+    if (!enabled) return;
     if (kb.running) {
         kb_machine();
         return;
@@ -488,27 +512,28 @@ static void keyboard_task(void) {
 // ========================================================================
 // 工作/休息周期
 // ========================================================================
-static uint32_t macro_until = 0;
-static bool in_work = true;
-
 static void macro_task(void) {
+    if (!enabled) {
+        in_work = true;  // 禁用时强制工作态（但实际不会执行鼠标键盘）
+        return;
+    }
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (macro_until == 0) {
         in_work = true;
         macro_until = now + rand_range(300000, 900000);
-        set_led_state(STATE_WORK);
+        if (usb_mounted) set_led_state(STATE_WORK);
         return;
     }
     if (now >= macro_until) {
         in_work = !in_work;
         if (in_work) {
             macro_until = now + rand_range(300000, 900000);
-            set_led_state(STATE_WORK);
+            if (usb_mounted) set_led_state(STATE_WORK);
             mouse_state = MOUSE_IDLE;
             mouse_state_until = now + rand_range(1000, 3000);
         } else {
             macro_until = now + rand_range(120000, 300000);
-            set_led_state(STATE_REST);
+            if (usb_mounted) set_led_state(STATE_REST);
             mouse_state = MOUSE_PAUSE;
             mouse_state_until = now + 1000000;
         }
@@ -516,14 +541,70 @@ static void macro_task(void) {
 }
 
 // ========================================================================
-// USB 事件回调（更新 LED 状态）
+// BOOTSEL 按键处理（首次忽略，防抖）
 // ========================================================================
-static bool usb_mounted = false;
+static void bootsel_task(void) {
+    static uint32_t last_poll_ms = 0;
+    static bool first_run = true;
+    static bool last_level = false;
+    static uint32_t last_toggle_ms = 0;
 
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (now - last_poll_ms < 10) return;
+    last_poll_ms = now;
+
+    bool pressed = (board_button_read() == 0);  // 按下为低电平
+
+    // 首次运行：只记录电平，不触发切换
+    if (first_run) {
+        last_level = pressed;
+        first_run = false;
+        return;
+    }
+
+    // 检测下降沿（释放 → 按下）
+    if (pressed && !last_level) {
+        if (now - last_toggle_ms > 300) {  // 防抖
+            enabled = !enabled;
+            last_toggle_ms = now;
+
+            // 更新 LED 状态
+            if (!usb_mounted) {
+                set_led_state(STATE_USB_READY);
+            } else if (!enabled) {
+                set_led_state(STATE_DISABLED);
+            } else {
+                if (in_work) set_led_state(STATE_WORK);
+                else set_led_state(STATE_REST);
+            }
+
+            // 如果禁用，重置鼠标状态机
+            if (!enabled) {
+                mouse_state = MOUSE_IDLE;
+                mouse_state_until = now + 1000000;
+                kb_reset();
+            } else {
+                // 启用时，重新开始活动
+                mouse_state = MOUSE_IDLE;
+                mouse_state_until = now + rand_range(2000, 5000);
+                macro_until = 0;  // 重置工作周期
+            }
+        }
+    }
+    last_level = pressed;
+}
+
+// ========================================================================
+// USB 事件回调
+// ========================================================================
 void tud_mount_cb(void) {
     usb_mounted = true;
-    if (in_work) set_led_state(STATE_WORK);
-    else set_led_state(STATE_REST);
+    if (!enabled) {
+        set_led_state(STATE_DISABLED);
+    } else {
+        if (in_work) set_led_state(STATE_WORK);
+        else set_led_state(STATE_REST);
+    }
 }
 
 void tud_umount_cb(void) {
@@ -538,7 +619,8 @@ void tud_suspend_cb(bool remote_wakeup_en) {
 
 void tud_resume_cb(void) {
     if (usb_mounted) {
-        if (in_work) set_led_state(STATE_WORK);
+        if (!enabled) set_led_state(STATE_DISABLED);
+        else if (in_work) set_led_state(STATE_WORK);
         else set_led_state(STATE_REST);
     } else {
         set_led_state(STATE_USB_READY);
@@ -553,39 +635,47 @@ int main(void) {
 
     // 初始化 WS2812
     if (!ws2812_init()) {
-        set_led(COLOR_RED);  // 错误红
+        set_led(COLOR_RED);
         while (1) tight_loop_contents();
     }
     set_led_state(STATE_BOOT);
 
-    // 初始化板载 LED（辅助心跳）
+    // 板载 LED 心跳（可选）
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);
 
-    // 随机种子
     srand(to_ms_since_boot(get_absolute_time()));
 
     tusb_init();
 
     // 初始状态
-    mouse_state = MOUSE_IDLE;
-    mouse_state_until = to_ms_since_boot(get_absolute_time()) + rand_range(2000, 5000);
-    next_kb_time = 0;
-    macro_until = 0;
+    enabled = false;
+    usb_mounted = false;
     in_work = true;
+    macro_until = 0;
+    mouse_state = MOUSE_IDLE;
+    mouse_state_until = to_ms_since_boot(get_absolute_time()) + 1000000;
+    next_kb_time = 0;
+    kb_reset();
 
     while (1) {
         tud_task();
-
+        bootsel_task();
         macro_task();
 
-        if (in_work) {
-            mouse_task();
-            keyboard_task();
+        // 只有启用且 USB 挂载时才执行鼠标键盘
+        if (enabled && usb_mounted) {
+            if (in_work) {
+                mouse_task();
+                keyboard_task();
+            } else {
+                // 休息期：鼠标不动作，键盘也不动作
+                // 但保持 idle
+            }
         }
 
-        // 板载 LED 心跳（指示程序运行）
+        // 板载 LED 心跳
         static uint32_t last_led = 0;
         uint32_t now = to_ms_since_boot(get_absolute_time());
         if (now - last_led > 1000) {
@@ -593,9 +683,9 @@ int main(void) {
             last_led = now;
         }
 
-        // 如果 USB 未挂载，保持蓝色，否则 LED 状态由其他函数控制
+        // 如果 USB 未挂载，强制蓝色（覆盖其他状态）
         if (!usb_mounted) {
-            set_led_state(STATE_USB_READY);
+            if (current_led_state != STATE_USB_READY) set_led_state(STATE_USB_READY);
         }
     }
 }

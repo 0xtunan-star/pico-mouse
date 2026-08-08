@@ -194,13 +194,6 @@ static void send_keyboard(uint8_t modifier, uint8_t key) {
     tud_hid_report(REPORT_ID_KEYBOARD, report, 8);
 }
 
-static void send_keyboard_report_full(uint8_t modifier, uint8_t k1, uint8_t k2, uint8_t k3, uint8_t k4, uint8_t k5, uint8_t k6) {
-    if (!enabled || suspended) return;
-    uint8_t report[8] = {modifier, 0x00, k1, k2, k3, k4, k5, k6};
-    while (!tud_hid_ready()) tud_task();
-    tud_hid_report(REPORT_ID_KEYBOARD, report, 8);
-}
-
 static void send_keyboard_release(void) {
     if (!enabled || suspended) return;
     uint8_t report[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -449,8 +442,8 @@ static void kb_build_action(uint8_t type) {
             kb_add_step(0, 0, 50);
             break;
         }
-        case 4: {  // Cmd+` 切换同应用窗口
-            kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE_ACCENT, rand_range(30,60));
+        case 4: {  // Cmd+` 切换同应用窗口（修正宏名）
+            kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE, rand_range(30,60));
             kb_add_step(0, 0, 50);
             break;
         }

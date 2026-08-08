@@ -32,17 +32,17 @@
 #define COLOR_OFF    0x000000
 
 // ========================================================================
-// 修复缺少的 HID 键码宏（TinyUSB 版本差异）
+// 修复缺少的 HID 键码宏
 // ========================================================================
 #ifndef HID_KEY_LEFT_BRACKET
-#define HID_KEY_LEFT_BRACKET   0x2F   // [
+#define HID_KEY_LEFT_BRACKET   0x2F
 #endif
 #ifndef HID_KEY_RIGHT_BRACKET
-#define HID_KEY_RIGHT_BRACKET  0x30   // ]
+#define HID_KEY_RIGHT_BRACKET  0x30
 #endif
 
 // ========================================================================
-// 设备状态（禁用 / 打字 / 浏览）
+// 设备状态
 // ========================================================================
 typedef enum {
     DEV_DISABLED,
@@ -53,25 +53,19 @@ typedef enum {
 static dev_state_t dev_state = DEV_DISABLED;
 
 // ========================================================================
-// HID 报告描述符
+// HID 描述符
 // ========================================================================
 uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(REPORT_ID_MOUSE)),
     TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(REPORT_ID_KEYBOARD))
 };
 
-// ========================================================================
-// 配置描述符（单接口）
-// ========================================================================
 #define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 uint8_t const desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, 1, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), 0x81, 64, 10)
 };
 
-// ========================================================================
-// 设备描述符
-// ========================================================================
 tusb_desc_device_t const desc_device = {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
@@ -89,9 +83,6 @@ tusb_desc_device_t const desc_device = {
     .bNumConfigurations = 0x01
 };
 
-// ========================================================================
-// 字符串描述符
-// ========================================================================
 static const char *string_desc_arr[] = {
     (const char[]){0x09, 0x04},
     "Logitech",
@@ -99,9 +90,6 @@ static const char *string_desc_arr[] = {
     "123456"
 };
 
-// ========================================================================
-// TinyUSB 回调
-// ========================================================================
 const uint8_t* tud_descriptor_device_cb(void) { return (const uint8_t*)&desc_device; }
 const uint8_t* tud_descriptor_configuration_cb(uint8_t index) { (void)index; return desc_configuration; }
 const uint16_t* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
@@ -156,7 +144,7 @@ static bool ws2812_init(void) {
 }
 
 // ========================================================================
-// LED 状态管理
+// LED 状态
 // ========================================================================
 typedef enum {
     STATE_BOOT,
@@ -200,13 +188,13 @@ static bool suspended = false;
 static bool in_work = true;
 static uint32_t macro_until = 0;
 
-// ========================================================================
-// 发送函数
-// ========================================================================
 static bool is_enabled(void) {
     return (dev_state == DEV_TYPING || dev_state == DEV_BROWSING);
 }
 
+// ========================================================================
+// 发送函数
+// ========================================================================
 static void send_mouse(uint8_t buttons, int8_t dx, int8_t dy) {
     if (!is_enabled() || suspended) return;
     uint8_t report[5] = {buttons, dx, dy, 0, 0};
@@ -235,9 +223,6 @@ static void send_keyboard_release(void) {
     tud_hid_report(REPORT_ID_KEYBOARD, report, 8);
 }
 
-// ========================================================================
-// 左键点击
-// ========================================================================
 static void do_left_click(void) {
     send_mouse(0x01, 0, 0);
     sleep_ms(50 + rand() % 30);
@@ -245,21 +230,19 @@ static void do_left_click(void) {
     sleep_ms(20);
 }
 
-// ========================================================================
-// 随机数
-// ========================================================================
 static int rand_range(int min, int max) {
     return min + rand() % (max - min + 1);
 }
 
 // ========================================================================
-// 鼠标状态机
+// 鼠标状态机（含平滑滚动）
 // ========================================================================
 typedef enum {
     MOUSE_IDLE,
     MOUSE_MOVING,
     MOUSE_PAUSE,
-    MOUSE_CLICKING
+    MOUSE_CLICKING,
+    MOUSE_SCROLLING   // 新增：逐格滚动中
 } mouse_state_t;
 
 static mouse_state_t mouse_state = MOUSE_IDLE;
@@ -269,6 +252,11 @@ static float mouse_total_x = 0, mouse_total_y = 0;
 static float mouse_cur_x = 0, mouse_cur_y = 0;
 static uint32_t mouse_next_tick = 0;
 static bool mouse_overshoot_done = false;
+
+// 滚动相关
+static int scroll_remaining = 0;     // 剩余待滚动格数
+static int scroll_direction = 0;     // 1 向下，-1 向上
+static uint32_t scroll_interval_ms = 20; // 每格间隔
 
 static float right_bias = 1.0f;
 static float speed_preference = 1.0f;
@@ -378,35 +366,72 @@ static void mouse_task(void) {
 
         case MOUSE_PAUSE:
             if (now > mouse_state_until) {
-                int scroll_prob = (dev_state == DEV_BROWSING) ? 50 : 30;
+                // 决定是否开始滚动
+                int scroll_prob = (dev_state == DEV_BROWSING) ? 70 : 30;
                 if (rand() % 100 < scroll_prob) {
-                    int8_t wheel = 0;
+                    int total_ticks = 0;
+                    int dir = 0;
                     if (dev_state == DEV_BROWSING) {
-                        if (rand() % 3 == 0) wheel = -(rand_range(2, 5));
-                        else wheel = rand_range(-1, 2);
+                        // 浏览模式：主要向下，偶尔向上微调
+                        if (rand() % 10 < 2) { // 20% 概率向上微调
+                            dir = -1;
+                            total_ticks = rand_range(1, 2);
+                        } else {
+                            dir = 1;
+                            total_ticks = rand_range(3, 6);
+                        }
                     } else {
-                        wheel = (rand() % 5) - 2;
+                        // 打字模式：±2~4 格随机
+                        dir = (rand() % 2) ? 1 : -1;
+                        total_ticks = rand_range(2, 4);
                     }
-                    if (wheel) {
-                        send_mouse_with_wheel(0, 0, 0, wheel);
-                        sleep_ms(50);
-                        send_mouse_with_wheel(0, 0, 0, 0);
+                    // 初始化滚动状态
+                    scroll_direction = dir;
+                    scroll_remaining = total_ticks;
+                    scroll_interval_ms = rand_range(15, 30);
+                    mouse_state = MOUSE_SCROLLING;
+                    mouse_next_tick = now + 5;
+                    break;
+                } else {
+                    // 不滚动，直接进入 idle
+                    mouse_state = MOUSE_IDLE;
+                    mouse_state_until = now + rand_range(2000, 15000);
+                    if (usb_mounted) {
+                        if (in_work) set_led_state(STATE_WORK);
+                        else set_led_state(STATE_REST);
                     }
-                }
-                mouse_state = MOUSE_IDLE;
-                mouse_state_until = now + rand_range(2000, 15000);
-                if (usb_mounted) {
-                    if (in_work) set_led_state(STATE_WORK);
-                    else set_led_state(STATE_REST);
+                    mouse_next_tick = now + 10;
                 }
             }
-            mouse_next_tick = now + rand_range(10, 30);
+            break;
+
+        case MOUSE_SCROLLING:
+            // 逐格发送滚动
+            if (scroll_remaining > 0) {
+                send_mouse_with_wheel(0, 0, 0, scroll_direction);
+                sleep_ms(10); // 确保每个报告被处理
+                send_mouse_with_wheel(0, 0, 0, 0);
+                scroll_remaining--;
+                mouse_next_tick = now + scroll_interval_ms;
+                // 如果还有剩余，保持状态，否则结束
+                if (scroll_remaining == 0) {
+                    // 滚动完成，回到 PAUSE 然后 IDLE
+                    mouse_state = MOUSE_PAUSE;
+                    mouse_state_until = now + rand_range(300, 1500);
+                    mouse_next_tick = now + 50;
+                }
+            } else {
+                // 安全退出
+                mouse_state = MOUSE_PAUSE;
+                mouse_state_until = now + rand_range(300, 1500);
+                mouse_next_tick = now + 50;
+            }
             break;
     }
 }
 
 // ========================================================================
-// 键盘状态机
+// 键盘状态机（不变，略去详细）
 // ========================================================================
 typedef enum {
     KB_IDLE,
@@ -450,96 +475,25 @@ static void kb_build_action(uint8_t type) {
     kb_add_step(0, 0, rand_range(150, 400));
 
     if (dev_state == DEV_TYPING) {
-        // ----- 打字模式：8 种动作 -----
         switch (type % 8) {
-            case 0: // Cmd+S
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_S, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 1: // Cmd+Tab闪切
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_TAB, rand_range(60,120));
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_TAB, rand_range(40,80));
-                kb_add_step(0, 0, 50);
-                break;
-            case 2: // Spotlight取消
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_SPACE, rand_range(150,350));
-                kb_add_step(0, 0, rand_range(100,200));
-                kb_add_step(0, HID_KEY_ESCAPE, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 3: // 打字纠错 "teh" -> "the "
-                kb_add_step(0, HID_KEY_T, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_E, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_H, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(100,200));
-                kb_add_step(0, HID_KEY_BACKSPACE, rand_range(30,60));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_T, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_H, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_E, rand_range(60,120));
-                kb_add_step(0, 0, rand_range(50,100));
-                kb_add_step(0, HID_KEY_SPACE, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 4: // Cmd+`
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 5: // 表情面板
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTCTRL, HID_KEY_SPACE, rand_range(80,150));
-                kb_add_step(0, 0, 50);
-                break;
-            case 6: // 音量+
-                kb_add_step(0, HID_KEY_VOLUME_UP, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 7: // 方向键滚动
-                kb_add_step(0, HID_KEY_ARROW_DOWN, rand_range(80,200));
-                kb_add_step(0, 0, rand_range(100,300));
-                kb_add_step(0, HID_KEY_ARROW_UP, rand_range(80,200));
-                kb_add_step(0, 0, 50);
-                break;
+            case 0: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_S, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 1: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_TAB, rand_range(60,120)); kb_add_step(KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_TAB, rand_range(40,80)); kb_add_step(0,0,50); break;
+            case 2: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_SPACE, rand_range(150,350)); kb_add_step(0,0, rand_range(100,200)); kb_add_step(0, HID_KEY_ESCAPE, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 3: kb_add_step(0, HID_KEY_T, rand_range(60,120)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_E, rand_range(60,120)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_H, rand_range(60,120)); kb_add_step(0,0, rand_range(100,200)); kb_add_step(0, HID_KEY_BACKSPACE, rand_range(30,60)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_T, rand_range(60,120)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_H, rand_range(60,120)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_E, rand_range(60,120)); kb_add_step(0,0, rand_range(50,100)); kb_add_step(0, HID_KEY_SPACE, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 4: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 5: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTCTRL, HID_KEY_SPACE, rand_range(80,150)); kb_add_step(0,0,50); break;
+            case 6: kb_add_step(0, HID_KEY_VOLUME_UP, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 7: kb_add_step(0, HID_KEY_ARROW_DOWN, rand_range(80,200)); kb_add_step(0,0, rand_range(100,300)); kb_add_step(0, HID_KEY_ARROW_UP, rand_range(80,200)); kb_add_step(0,0,50); break;
         }
     } else {
-        // ----- 浏览模式：7 种动作 -----
         switch (type % 7) {
-            case 0: // Cmd+Shift+[ 左切换标签
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_LEFT_BRACKET, rand_range(40,80));
-                kb_add_step(0, 0, 50);
-                break;
-            case 1: // Cmd+Shift+] 右切换标签
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_RIGHT_BRACKET, rand_range(40,80));
-                kb_add_step(0, 0, 50);
-                break;
-            case 2: // Cmd+R 刷新
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_R, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 3: // Cmd+Tab闪切
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_TAB, rand_range(60,120));
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_TAB, rand_range(40,80));
-                kb_add_step(0, 0, 50);
-                break;
-            case 4: // Spotlight取消
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_SPACE, rand_range(150,350));
-                kb_add_step(0, 0, rand_range(100,200));
-                kb_add_step(0, HID_KEY_ESCAPE, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 5: // Cmd+`
-                kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE, rand_range(30,60));
-                kb_add_step(0, 0, 50);
-                break;
-            case 6: // 方向键滚动
-                kb_add_step(0, HID_KEY_ARROW_DOWN, rand_range(80,200));
-                kb_add_step(0, 0, rand_range(100,300));
-                kb_add_step(0, HID_KEY_ARROW_UP, rand_range(80,200));
-                kb_add_step(0, 0, 50);
-                break;
+            case 0: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_LEFT_BRACKET, rand_range(40,80)); kb_add_step(0,0,50); break;
+            case 1: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_RIGHT_BRACKET, rand_range(40,80)); kb_add_step(0,0,50); break;
+            case 2: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_R, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 3: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_TAB, rand_range(60,120)); kb_add_step(KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_TAB, rand_range(40,80)); kb_add_step(0,0,50); break;
+            case 4: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_SPACE, rand_range(150,350)); kb_add_step(0,0, rand_range(100,200)); kb_add_step(0, HID_KEY_ESCAPE, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 5: kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_GRAVE, rand_range(30,60)); kb_add_step(0,0,50); break;
+            case 6: kb_add_step(0, HID_KEY_ARROW_DOWN, rand_range(80,200)); kb_add_step(0,0, rand_range(100,300)); kb_add_step(0, HID_KEY_ARROW_UP, rand_range(80,200)); kb_add_step(0,0,50); break;
         }
     }
 }
@@ -555,7 +509,6 @@ static void kb_machine(void) {
             kb.step_index = 0;
             kb.state_until = now + 1;
             break;
-
         case KB_SEND_KEY: {
             if (kb.step_index >= kb.total_steps) {
                 kb.state = KB_FINISH;
@@ -585,7 +538,6 @@ static void kb_machine(void) {
             }
             break;
         }
-
         case KB_SEND_MOD: {
             uint8_t mod = kb.steps[kb.step_index][0];
             if (mod != 0) {
@@ -597,19 +549,16 @@ static void kb_machine(void) {
             }
             break;
         }
-
         case KB_WAIT_INTERVAL:
             kb.step_index++;
             kb.state = KB_SEND_KEY;
             kb.state_until = now + 1;
             break;
-
         case KB_FINISH:
             send_keyboard_release();
             kb_reset();
             next_kb_time = to_ms_since_boot(get_absolute_time()) + rand_range(60000, 600000);
             break;
-
         default:
             kb_reset();
             break;
@@ -640,10 +589,7 @@ static void keyboard_task(void) {
 // 工作/休息周期
 // ========================================================================
 static void macro_task(void) {
-    if (!is_enabled()) {
-        in_work = true;
-        return;
-    }
+    if (!is_enabled()) { in_work = true; return; }
     if (suspended) return;
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (macro_until == 0) {
@@ -669,7 +615,7 @@ static void macro_task(void) {
 }
 
 // ========================================================================
-// BOOTSEL 按键处理（点击循环切换状态）
+// BOOTSEL 按键
 // ========================================================================
 static void bootsel_task(void) {
     static uint32_t last_poll_ms = 0;
@@ -692,17 +638,10 @@ static void bootsel_task(void) {
     if (pressed && !last_level) {
         if (now - last_toggle_ms > 300) {
             last_toggle_ms = now;
+            if (dev_state == DEV_DISABLED) dev_state = DEV_TYPING;
+            else if (dev_state == DEV_TYPING) dev_state = DEV_BROWSING;
+            else dev_state = DEV_DISABLED;
 
-            // 循环切换：禁用 → 打字 → 浏览 → 禁用
-            if (dev_state == DEV_DISABLED) {
-                dev_state = DEV_TYPING;
-            } else if (dev_state == DEV_TYPING) {
-                dev_state = DEV_BROWSING;
-            } else {
-                dev_state = DEV_DISABLED;
-            }
-
-            // 更新 LED
             if (!usb_mounted) {
                 set_led_state(STATE_USB_READY);
             } else if (dev_state == DEV_DISABLED) {
@@ -720,36 +659,29 @@ static void bootsel_task(void) {
             }
         }
     }
-
     last_level = pressed;
 }
 
 // ========================================================================
-// USB 事件回调
+// USB 回调
 // ========================================================================
 void tud_mount_cb(void) {
     usb_mounted = true;
     suspended = false;
-    if (dev_state == DEV_DISABLED) {
-        set_led_state(STATE_DISABLED);
-    } else {
-        if (in_work) set_led_state(STATE_WORK);
-        else set_led_state(STATE_REST);
-    }
+    if (dev_state == DEV_DISABLED) set_led_state(STATE_DISABLED);
+    else if (in_work) set_led_state(STATE_WORK);
+    else set_led_state(STATE_REST);
 }
-
 void tud_umount_cb(void) {
     usb_mounted = false;
     suspended = false;
     set_led_state(STATE_USB_READY);
 }
-
 void tud_suspend_cb(bool remote_wakeup_en) {
     (void)remote_wakeup_en;
     suspended = true;
     set_led_state(STATE_USB_READY);
 }
-
 void tud_resume_cb(void) {
     suspended = false;
     if (usb_mounted) {
@@ -762,7 +694,7 @@ void tud_resume_cb(void) {
 }
 
 // ========================================================================
-// 主函数
+// main
 // ========================================================================
 int main(void) {
     board_init();
@@ -777,13 +709,11 @@ int main(void) {
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);
 
-    // 随机种子
     uint32_t seed = (uint32_t)to_ms_since_boot(get_absolute_time());
     seed ^= (uint32_t)main;
     seed ^= (uint32_t)board_init;
     srand(seed);
 
-    // 个性化偏好
     right_bias = 0.9f + (float)(rand() % 40) / 100.0f;
     speed_preference = 0.8f + (float)(rand() % 40) / 100.0f;
 
@@ -805,11 +735,9 @@ int main(void) {
 
         if (!suspended) {
             macro_task();
-            if (is_enabled() && usb_mounted) {
-                if (in_work) {
-                    mouse_task();
-                    keyboard_task();
-                }
+            if (is_enabled() && usb_mounted && in_work) {
+                mouse_task();
+                keyboard_task();
             }
         }
 

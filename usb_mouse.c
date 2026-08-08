@@ -235,14 +235,14 @@ static int rand_range(int min, int max) {
 }
 
 // ========================================================================
-// 鼠标状态机（含平滑滚动）
+// 鼠标状态机（含平滑连续滚动）
 // ========================================================================
 typedef enum {
     MOUSE_IDLE,
     MOUSE_MOVING,
     MOUSE_PAUSE,
     MOUSE_CLICKING,
-    MOUSE_SCROLLING   // 新增：逐格滚动中
+    MOUSE_SCROLLING
 } mouse_state_t;
 
 static mouse_state_t mouse_state = MOUSE_IDLE;
@@ -254,9 +254,9 @@ static uint32_t mouse_next_tick = 0;
 static bool mouse_overshoot_done = false;
 
 // 滚动相关
-static int scroll_remaining = 0;     // 剩余待滚动格数
+static int scroll_remaining = 0;
 static int scroll_direction = 0;     // 1 向下，-1 向上
-static uint32_t scroll_interval_ms = 20; // 每格间隔
+static uint32_t scroll_interval_ms = 20;
 
 static float right_bias = 1.0f;
 static float speed_preference = 1.0f;
@@ -366,13 +366,11 @@ static void mouse_task(void) {
 
         case MOUSE_PAUSE:
             if (now > mouse_state_until) {
-                // 决定是否开始滚动
                 int scroll_prob = (dev_state == DEV_BROWSING) ? 70 : 30;
                 if (rand() % 100 < scroll_prob) {
                     int total_ticks = 0;
                     int dir = 0;
                     if (dev_state == DEV_BROWSING) {
-                        // 浏览模式：主要向下，偶尔向上微调
                         if (rand() % 10 < 2) { // 20% 概率向上微调
                             dir = -1;
                             total_ticks = rand_range(1, 2);
@@ -381,19 +379,16 @@ static void mouse_task(void) {
                             total_ticks = rand_range(3, 6);
                         }
                     } else {
-                        // 打字模式：±2~4 格随机
                         dir = (rand() % 2) ? 1 : -1;
                         total_ticks = rand_range(2, 4);
                     }
-                    // 初始化滚动状态
                     scroll_direction = dir;
                     scroll_remaining = total_ticks;
-                    scroll_interval_ms = rand_range(15, 30);
+                    scroll_interval_ms = rand_range(20, 40);
                     mouse_state = MOUSE_SCROLLING;
                     mouse_next_tick = now + 5;
                     break;
                 } else {
-                    // 不滚动，直接进入 idle
                     mouse_state = MOUSE_IDLE;
                     mouse_state_until = now + rand_range(2000, 15000);
                     if (usb_mounted) {
@@ -406,16 +401,14 @@ static void mouse_task(void) {
             break;
 
         case MOUSE_SCROLLING:
-            // 逐格发送滚动
             if (scroll_remaining > 0) {
+                // 连续发送滚动，不发送 0
                 send_mouse_with_wheel(0, 0, 0, scroll_direction);
-                sleep_ms(10); // 确保每个报告被处理
-                send_mouse_with_wheel(0, 0, 0, 0);
                 scroll_remaining--;
                 mouse_next_tick = now + scroll_interval_ms;
-                // 如果还有剩余，保持状态，否则结束
                 if (scroll_remaining == 0) {
-                    // 滚动完成，回到 PAUSE 然后 IDLE
+                    // 滚动结束，发送 0 停止
+                    send_mouse_with_wheel(0, 0, 0, 0);
                     mouse_state = MOUSE_PAUSE;
                     mouse_state_until = now + rand_range(300, 1500);
                     mouse_next_tick = now + 50;
@@ -431,7 +424,7 @@ static void mouse_task(void) {
 }
 
 // ========================================================================
-// 键盘状态机（不变，略去详细）
+// 键盘状态机（不变）
 // ========================================================================
 typedef enum {
     KB_IDLE,

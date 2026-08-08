@@ -4,7 +4,6 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
-#include "hardware/rosc.h"
 #include "tusb.h"
 #include "bsp/board.h"
 #include "ws2812.pio.h"
@@ -244,9 +243,8 @@ static float mouse_cur_x = 0, mouse_cur_y = 0;
 static uint32_t mouse_next_tick = 0;
 static bool mouse_overshoot_done = false;
 
-// 右侧偏好因子（每次上电随机生成，模拟用户习惯）
 static float right_bias = 1.0f;
-static float speed_preference = 1.0f;  // 0.8~1.2
+static float speed_preference = 1.0f;
 
 static void mouse_task(void) {
     if (!enabled || !usb_mounted || suspended) return;
@@ -260,14 +258,11 @@ static void mouse_task(void) {
     switch (mouse_state) {
         case MOUSE_IDLE:
             if (now > mouse_state_until) {
-                // 生成移动目标
                 mouse_total_x = rand_range(-200, 200);
                 mouse_total_y = rand_range(-200, 200);
-                // 右侧偏好（让移动倾向右侧）
                 mouse_total_x = mouse_total_x * right_bias;
                 if (rand() % 5 == 0) { mouse_total_x *= 2; mouse_total_y *= 2; }
                 float dist = sqrtf(mouse_total_x * mouse_total_x + mouse_total_y * mouse_total_y);
-                // 速度偏好
                 int step_base = (dist > 150) ? rand_range(20, 40) : rand_range(40, 100);
                 mouse_total_steps = (int)(step_base * speed_preference);
                 if (mouse_total_steps < 10) mouse_total_steps = 10;
@@ -277,7 +272,6 @@ static void mouse_task(void) {
                 mouse_state = MOUSE_MOVING;
                 if (usb_mounted) set_led_state(STATE_ACTIVITY);
             }
-            // 微漂移：idle 状态下偶尔小幅度移动
             static uint32_t last_idle_drift = 0;
             if (now - last_idle_drift > 5000 + rand() % 10000) {
                 int8_t drift_dx = (rand() % 3) - 1;
@@ -353,7 +347,6 @@ static void mouse_task(void) {
 
         case MOUSE_PAUSE:
             if (now > mouse_state_until) {
-                // 30% 概率触发滚轮滚动
                 if (rand() % 10 < 3) {
                     int8_t wheel = (rand() % 5) - 2;
                     if (wheel) {
@@ -412,10 +405,6 @@ static void kb_add_step(uint8_t mod, uint8_t key, uint16_t delay) {
     kb.steps[kb.total_steps][1] = key;
     kb.delays[kb.total_steps] = delay;
     kb.total_steps++;
-}
-
-static void kb_add_mod_step(uint8_t mod, uint8_t key, uint16_t delay) {
-    kb_add_step(mod, key, delay);
 }
 
 static void kb_build_action(uint8_t type) {
@@ -715,15 +704,15 @@ int main(void) {
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);
 
-    // 硬件随机种子
-    uint32_t seed = rosc_hw->randombit;
-    seed ^= (uint32_t)to_ms_since_boot(get_absolute_time());
+    // 使用时间 + 函数地址作为随机种子（无需 hardware/rosc.h）
+    uint32_t seed = (uint32_t)to_ms_since_boot(get_absolute_time());
     seed ^= (uint32_t)main;
+    seed ^= (uint32_t)board_init;
     srand(seed);
 
-    // 生成个性化偏好（每次上电不同）
-    right_bias = 0.9f + (float)(rand() % 40) / 100.0f;  // 0.90~1.30
-    speed_preference = 0.8f + (float)(rand() % 40) / 100.0f;  // 0.80~1.20
+    // 生成个性化偏好
+    right_bias = 0.9f + (float)(rand() % 40) / 100.0f;
+    speed_preference = 0.8f + (float)(rand() % 40) / 100.0f;
 
     tusb_init();
 

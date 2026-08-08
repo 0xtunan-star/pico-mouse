@@ -32,6 +32,16 @@
 #define COLOR_OFF    0x000000
 
 // ========================================================================
+// 修复缺少的 HID 键码宏（TinyUSB 版本差异）
+// ========================================================================
+#ifndef HID_KEY_LEFT_BRACKET
+#define HID_KEY_LEFT_BRACKET   0x2F   // [
+#endif
+#ifndef HID_KEY_RIGHT_BRACKET
+#define HID_KEY_RIGHT_BRACKET  0x30   // ]
+#endif
+
+// ========================================================================
 // 设备状态（禁用 / 打字 / 浏览）
 // ========================================================================
 typedef enum {
@@ -163,7 +173,7 @@ static led_state_t current_led_state = STATE_BOOT;
 static uint32_t get_work_color(void) {
     if (dev_state == DEV_TYPING) return COLOR_GREEN;
     else if (dev_state == DEV_BROWSING) return COLOR_CYAN;
-    else return COLOR_RED; // fallback
+    else return COLOR_RED;
 }
 
 static void set_led_state(led_state_t state) {
@@ -191,7 +201,7 @@ static bool in_work = true;
 static uint32_t macro_until = 0;
 
 // ========================================================================
-// 发送函数（检查启用状态）
+// 发送函数
 // ========================================================================
 static bool is_enabled(void) {
     return (dev_state == DEV_TYPING || dev_state == DEV_BROWSING);
@@ -440,6 +450,7 @@ static void kb_build_action(uint8_t type) {
     kb_add_step(0, 0, rand_range(150, 400));
 
     if (dev_state == DEV_TYPING) {
+        // ----- 打字模式：8 种动作 -----
         switch (type % 8) {
             case 0: // Cmd+S
                 kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_S, rand_range(30,60));
@@ -456,7 +467,7 @@ static void kb_build_action(uint8_t type) {
                 kb_add_step(0, HID_KEY_ESCAPE, rand_range(30,60));
                 kb_add_step(0, 0, 50);
                 break;
-            case 3: // 打字纠错
+            case 3: // 打字纠错 "teh" -> "the "
                 kb_add_step(0, HID_KEY_T, rand_range(60,120));
                 kb_add_step(0, 0, rand_range(50,100));
                 kb_add_step(0, HID_KEY_E, rand_range(60,120));
@@ -493,17 +504,18 @@ static void kb_build_action(uint8_t type) {
                 kb_add_step(0, 0, 50);
                 break;
         }
-    } else { // DEV_BROWSING
+    } else {
+        // ----- 浏览模式：7 种动作 -----
         switch (type % 7) {
-            case 0: // Cmd+Shift+[
+            case 0: // Cmd+Shift+[ 左切换标签
                 kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_LEFT_BRACKET, rand_range(40,80));
                 kb_add_step(0, 0, 50);
                 break;
-            case 1: // Cmd+Shift+]
+            case 1: // Cmd+Shift+] 右切换标签
                 kb_add_step(KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_LEFTSHIFT, HID_KEY_RIGHT_BRACKET, rand_range(40,80));
                 kb_add_step(0, 0, 50);
                 break;
-            case 2: // Cmd+R
+            case 2: // Cmd+R 刷新
                 kb_add_step(KEYBOARD_MODIFIER_LEFTGUI, HID_KEY_R, rand_range(30,60));
                 kb_add_step(0, 0, 50);
                 break;
@@ -657,7 +669,7 @@ static void macro_task(void) {
 }
 
 // ========================================================================
-// BOOTSEL 按键处理（短按循环切换）
+// BOOTSEL 按键处理（点击循环切换状态）
 // ========================================================================
 static void bootsel_task(void) {
     static uint32_t last_poll_ms = 0;
@@ -677,38 +689,34 @@ static void bootsel_task(void) {
         return;
     }
 
-    // 检测按下事件（上升沿）
     if (pressed && !last_level) {
-        // 防抖：距离上次切换至少300ms
         if (now - last_toggle_ms > 300) {
             last_toggle_ms = now;
-            // 循环切换状态
+
+            // 循环切换：禁用 → 打字 → 浏览 → 禁用
             if (dev_state == DEV_DISABLED) {
                 dev_state = DEV_TYPING;
             } else if (dev_state == DEV_TYPING) {
                 dev_state = DEV_BROWSING;
-            } else { // DEV_BROWSING
+            } else {
                 dev_state = DEV_DISABLED;
             }
 
-            // 更新 LED 和状态
+            // 更新 LED
             if (!usb_mounted) {
                 set_led_state(STATE_USB_READY);
             } else if (dev_state == DEV_DISABLED) {
                 set_led_state(STATE_DISABLED);
-                // 停止鼠标/键盘活动
                 mouse_state = MOUSE_IDLE;
                 mouse_state_until = now + 1000000;
                 kb_reset();
             } else {
-                // 启用（打字或浏览）
                 if (in_work) set_led_state(STATE_WORK);
                 else set_led_state(STATE_REST);
-                // 重置鼠标和键盘定时器，准备活动
                 mouse_state = MOUSE_IDLE;
                 mouse_state_until = now + rand_range(2000, 5000);
-                macro_until = 0;   // 重置工作周期，让工作周期重新开始
-                next_kb_time = 0;   // 重置键盘定时器
+                macro_until = 0;
+                next_kb_time = 0;
             }
         }
     }
@@ -781,7 +789,6 @@ int main(void) {
 
     tusb_init();
 
-    // 初始状态：禁用（红色）
     dev_state = DEV_DISABLED;
     usb_mounted = false;
     suspended = false;
@@ -806,7 +813,6 @@ int main(void) {
             }
         }
 
-        // 板载LED心跳
         static uint32_t last_led = 0;
         uint32_t now = to_ms_since_boot(get_absolute_time());
         if (now - last_led > 1000) {
